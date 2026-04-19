@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 * {
@@ -10,14 +10,132 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: Arial, sans-serif;
-  background: #0f1115;
-  color: #e6e6e6;
+  min-height: 100%;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  color: #2d1c0d;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(246, 232, 168, 0.5), transparent 35%),
+    radial-gradient(circle at 80% 30%, rgba(166, 222, 117, 0.45), transparent 32%),
+    linear-gradient(180deg, #88c96f 0%, #5ca04b 35%, #467a3b 100%);
 }
 
-main {
+.game-shell {
   min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
+  background-image:
+    radial-gradient(circle, rgba(108, 73, 34, 0.2) 8%, transparent 9%),
+    radial-gradient(circle, rgba(108, 73, 34, 0.18) 8%, transparent 9%),
+    linear-gradient(to top, rgba(55, 95, 37, 0.5), rgba(132, 176, 91, 0.25));
+  background-size:
+    60px 60px,
+    80px 80px,
+    auto;
+  background-position:
+    0 0,
+    30px 40px,
+    center;
+}
+
+.game-panel {
+  width: min(860px, 100%);
+  border-radius: 20px;
+  border: 3px solid #6c4922;
+  background: linear-gradient(160deg, rgba(255, 243, 220, 0.95), rgba(240, 225, 189, 0.94));
+  box-shadow: 0 24px 40px rgba(52, 33, 13, 0.25);
+  padding: 20px;
+}
+
+.game-header h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.6rem, 2.6vw, 2.3rem);
+}
+
+.game-header p {
+  margin: 0 0 14px;
+}
+
+.menu-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.menu-grid button,
+.card button {
+  border: 2px solid #6c4922;
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 700;
+  color: #2f1f10;
+  background: linear-gradient(180deg, #d5a86c 0%, #b3783d 100%);
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.menu-grid button:hover,
+.card button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.menu-grid button:disabled,
+.card button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 2px solid rgba(108, 73, 34, 0.45);
+  border-radius: 14px;
+  background: rgba(255, 252, 243, 0.9);
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+.tap-mode {
+  text-align: center;
+}
+
+.squirrel {
+  margin-top: 8px;
+  width: min(280px, 85vw);
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  font-size: clamp(3rem, 8vw, 5.2rem);
+  background:
+    radial-gradient(circle at 50% 30%, #f1d2b3 0, #c5966b 55%, #85522a 100%) !important;
+  box-shadow: inset 0 8px 10px rgba(255, 255, 255, 0.3), 0 10px 20px rgba(0, 0, 0, 0.25);
+}
+
+.squirrel:active {
+  transform: scale(0.98);
+}
+
+.leaderboard {
+  display: grid;
+  gap: 8px;
+  padding-left: 18px;
+}
+
+.leaderboard li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.status {
+  margin: 12px 0 0;
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  .menu-grid {
+    grid-template-columns: 1fr;
+  }
 }
