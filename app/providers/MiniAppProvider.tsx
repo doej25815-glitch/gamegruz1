@@ -5,13 +5,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import sdk from "@farcaster/miniapp-sdk";
 import { farcasterMiniApp } from "@farcaster/miniapp-wagmi-connector";
 import { WagmiProvider, createConfig, http } from "wagmi";
-import { baseSepolia } from "wagmi/chains";
+import { base } from "wagmi/chains";
 
 const config = createConfig({
-  chains: [baseSepolia],
+  chains: [base],
   connectors: [farcasterMiniApp()],
   transports: {
-    [baseSepolia.id]: http(),
+    [base.id]: http(),
   },
 });
 

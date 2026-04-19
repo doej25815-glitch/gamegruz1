@@ -16,12 +16,12 @@ import {
   toSortedLeaderboard,
   type LeaderboardPlayer,
 } from "@/lib/gameState";
-import { baseSepolia } from "wagmi/chains";
+import { base } from "wagmi/chains";
 
 type Screen = "menu" | "leaderboard" | "checkin" | "tap";
 
-const baseSepoliaClient = createPublicClient({
-  chain: baseSepolia,
+const baseClient = createPublicClient({
+  chain: base,
   transport: http(),
 });
 
@@ -48,7 +48,7 @@ export default function HomePage() {
     try {
       const sdk = createBaseAccountSDK({
         appName: "Evil Squirrel Tap",
-        appChainIds: [baseSepolia.id],
+        appChainIds: [base.id],
       });
       return sdk.getProvider();
     } catch {
@@ -259,18 +259,18 @@ export default function HomePage() {
         })) as Hex;
         txHash = hash;
       } else {
-        if (chainId !== baseSepolia.id) {
-          await switchChainAsync({ chainId: baseSepolia.id });
+        if (chainId !== base.id) {
+          await switchChainAsync({ chainId: base.id });
         }
 
         txHash = await sendTransactionAsync({
-          chainId: baseSepolia.id,
+          chainId: base.id,
           to: walletAddress,
           value: parseEther("0.000000000000000001"),
         });
       }
 
-      await baseSepoliaClient.waitForTransactionReceipt({ hash: txHash });
+      await baseClient.waitForTransactionReceipt({ hash: txHash });
       applyConfirmedCheckIn();
     } catch (error) {
       setStatus(`Транзакция отклонена или не прошла: ${(error as Error).message}`);
@@ -340,7 +340,7 @@ export default function HomePage() {
 
         {screen === "checkin" ? (
           <div className="card">
-            <h2>Ончейн чекин (Base Sepolia)</h2>
+            <h2>Ончейн чекин (Base Mainnet)</h2>
             <p>
               До следующего окна чекина: <strong>{formatCountdown(nextCheckInTimer)}</strong> (UTC)
             </p>
