@@ -12,8 +12,9 @@ import {
   type Address,
   type Hex,
 } from "viem";
-import { useAccount, useConnect, useSwitchChain, useWriteContract } from "wagmi";
+import { useAccount, useConnect, useSendTransaction, useSwitchChain } from "wagmi";
 import {
+  BASE_BUILDER_CODE_DATA_SUFFIX,
   CHECK_IN_CONTRACT_ADDRESS,
   CHECK_IN_INTERVAL_SECONDS,
   CHECK_IN_PRICE_ETH,
@@ -39,11 +40,15 @@ const baseClient = createPublicClient({
   transport: http(),
 });
 
+function withBuilderCodeDataSuffix(data: Hex): Hex {
+  return `${data}${BASE_BUILDER_CODE_DATA_SUFFIX.slice(2)}` as Hex;
+}
+
 export default function HomePage() {
   const { address: farcasterAddress, isConnected, chainId } = useAccount();
   const { connect, connectors } = useConnect();
   const { switchChainAsync } = useSwitchChain();
-  const { writeContractAsync } = useWriteContract();
+  const { sendTransactionAsync } = useSendTransaction();
 
   const [screen, setScreen] = useState<Screen>("menu");
   const [leaderboardMap, setLeaderboardMap] = useState<Record<string, LeaderboardPlayer>>({});
@@ -327,6 +332,12 @@ export default function HomePage() {
       setStatus(`Подтверди checkIn() в кошельке. Стоимость: ${CHECK_IN_PRICE_ETH} ETH.`);
 
       let txHash: Hex | null = null;
+      const checkInData = withBuilderCodeDataSuffix(
+        encodeFunctionData({
+          abi: checkInAbi,
+          functionName: "checkIn",
+        })
+      );
 
       if (baseProvider && walletSource === "base") {
         const hash = (await baseProvider.request({
@@ -335,10 +346,7 @@ export default function HomePage() {
             {
               from: walletAddress,
               to: CHECK_IN_CONTRACT_ADDRESS,
-              data: encodeFunctionData({
-                abi: checkInAbi,
-                functionName: "checkIn",
-              }),
+              data: checkInData,
               value: toHex(parseEther(CHECK_IN_PRICE_ETH)),
             },
           ],
@@ -349,11 +357,10 @@ export default function HomePage() {
           await switchChainAsync({ chainId: base.id });
         }
 
-        txHash = await writeContractAsync({
-          address: CHECK_IN_CONTRACT_ADDRESS,
-          abi: checkInAbi,
-          functionName: "checkIn",
+        txHash = await sendTransactionAsync({
           chainId: base.id,
+          to: CHECK_IN_CONTRACT_ADDRESS,
+          data: checkInData,
           value: parseEther(CHECK_IN_PRICE_ETH),
         });
       }
