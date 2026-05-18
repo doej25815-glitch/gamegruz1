@@ -359,11 +359,18 @@ export default function HomePage() {
       }
 
       await baseClient.waitForTransactionReceipt({ hash: txHash });
-      const onchainPlayer = await syncOnchainPlayer(walletAddress);
-      applyConfirmedCheckIn({
-        ...onchainPlayer,
-        lastCheckInAt: onchainPlayer.lastCheckInAt || Date.now(),
-      });
+
+      try {
+        const onchainPlayer = await syncOnchainPlayer(walletAddress);
+        applyConfirmedCheckIn({
+          ...onchainPlayer,
+          lastCheckInAt: onchainPlayer.lastCheckInAt || Date.now(),
+        });
+      } catch {
+        // Some in-app webviews can briefly lose public RPC access after wallet return.
+        // The transaction is already confirmed, so keep the game responsive locally.
+        applyConfirmedCheckIn();
+      }
     } catch (error) {
       setStatus(`Транзакция отклонена или не прошла: ${(error as Error).message}`);
     } finally {
