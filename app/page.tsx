@@ -2,14 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createBaseAccountSDK } from "@base-org/account";
-import { createPublicClient, http, isAddress, parseEther, type Address, type Hex } from "viem";
-import { useAccount, useConnect, useSendTransaction, useSwitchChain } from "wagmi";
+import {
+  createPublicClient,
+  encodeFunctionData,
+  http,
+  isAddress,
+  parseEther,
+  toHex,
+  type Address,
+  type Hex,
+} from "viem";
+import { useAccount, useConnect, useSwitchChain, useWriteContract } from "wagmi";
+import {
+  CHECK_IN_CONTRACT_ADDRESS,
+  CHECK_IN_INTERVAL_SECONDS,
+  CHECK_IN_PRICE_ETH,
+  checkInAbi,
+} from "@/lib/checkInContract";
 import {
   formatCountdown,
   getDisplayName,
-  getSecondsUntilNextUtcMidnight,
+  getSecondsUntilNextCheckIn,
   getTapMultiplier,
-  getUtcDayKey,
   loadLeaderboard,
   saveLeaderboard,
   safeParseScore,
@@ -29,16 +43,14 @@ export default function HomePage() {
   const { address: farcasterAddress, isConnected, chainId } = useAccount();
   const { connect, connectors } = useConnect();
   const { switchChainAsync } = useSwitchChain();
-  const { sendTransactionAsync } = useSendTransaction();
+  const { writeContractAsync } = useWriteContract();
 
   const [screen, setScreen] = useState<Screen>("menu");
   const [leaderboardMap, setLeaderboardMap] = useState<Record<string, LeaderboardPlayer>>({});
   const [status, setStatus] = useState<string>(
     "Ожидаю кошелек из Base App/Farcaster. Интерфейс подключения скрыт."
   );
-  const [nextCheckInTimer, setNextCheckInTimer] = useState<number>(
-    getSecondsUntilNextUtcMidnight()
-  );
+  const [nextCheckInTimer, setNextCheckInTimer] = useState<number>(0);
   const [baseAddress, setBaseAddress] = useState<string | null>(null);
   const [checkInLoading, setCheckInLoading] = useState(false);
   const [walletSource, setWalletSource] = useState<"base" | "farcaster" | null>(null);
@@ -58,7 +70,6 @@ export default function HomePage() {
 
   const address = baseAddress ?? farcasterAddress;
 
-  const currentDayKey = getUtcDayKey();
   const playerKey = address?.toLowerCase() ?? "";
 
   const player = useMemo<LeaderboardPlayer | null>(() => {
@@ -72,7 +83,7 @@ export default function HomePage() {
         score: 0,
         streak: 0,
         totalCheckIns: 0,
-        lastCheckInDay: null,
+        lastCheckInAt: null,
         updatedAt: Date.now(),
       }
     );
@@ -92,46 +103,102 @@ export default function HomePage() {
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setNextCheckInTimer(getSecondsUntilNextUtcMidnight());
+      setNextCheckInTimer(
+        getSecondsUntilNextCheckIn(player?.lastCheckInAt, CHECK_IN_INTERVAL_SECONDS)
+      );
     }, 1000);
 
+    setNextCheckInTimer(
+      getSecondsUntilNextCheckIn(player?.lastCheckInAt, CHECK_IN_INTERVAL_SECONDS)
+    );
+
     return () => window.clearInterval(interval);
+  }, [player?.lastCheckInAt]);
+
+  const syncOnchainPlayer = useCallback(async (walletAddress: Address): Promise<{
+    lastCheckInAt: number;
+    streak: number;
+    totalCheckIns: number;
+  }> => {
+    const [lastCheckInAt, streak, totalCheckIns] = await baseClient.readContract({
+      address: CHECK_IN_CONTRACT_ADDRESS,
+      abi: checkInAbi,
+      functionName: "getPlayer",
+      args: [walletAddress],
+    });
+
+    const normalizedAddress = walletAddress.toLowerCase();
+    const onchainPlayer = {
+      lastCheckInAt: Number(lastCheckInAt) === 0 ? 0 : Number(lastCheckInAt) * 1000,
+      streak: Number(streak),
+      totalCheckIns: Number(totalCheckIns),
+    };
+
+    setLeaderboardMap((prev) => {
+      const existing = prev[normalizedAddress] ?? {
+        address: normalizedAddress,
+        name: getDisplayName(normalizedAddress),
+        score: 0,
+        streak: 0,
+        totalCheckIns: 0,
+        lastCheckInAt: null,
+        updatedAt: Date.now(),
+      };
+
+      return {
+        ...prev,
+        [normalizedAddress]: {
+          ...existing,
+          streak: onchainPlayer.streak,
+          totalCheckIns: onchainPlayer.totalCheckIns,
+          lastCheckInAt: onchainPlayer.lastCheckInAt === 0 ? null : onchainPlayer.lastCheckInAt,
+          updatedAt: Date.now(),
+        },
+      };
+    });
+
+    return onchainPlayer;
   }, []);
 
-  function applyConfirmedCheckIn(): void {
+  useEffect(() => {
+    if (!address || !isAddress(address)) {
+      return;
+    }
+
+    syncOnchainPlayer(address).catch(() => {
+      // Keep local cached state if the public RPC read is temporarily unavailable.
+    });
+  }, [address, syncOnchainPlayer]);
+
+  function applyConfirmedCheckIn(onchainPlayer?: {
+    lastCheckInAt: number;
+    streak: number;
+    totalCheckIns: number;
+  }): void {
     if (!player || !playerKey) {
       return;
     }
 
     setLeaderboardMap((prev) => {
       const existing = prev[playerKey] ?? player;
-      const isRepeatedToday = existing.lastCheckInDay === currentDayKey;
-      if (isRepeatedToday) {
-        return prev;
-      }
-
-      const shouldResetStreak =
-        existing.lastCheckInDay !== null &&
-        existing.lastCheckInDay !== currentDayKey &&
-        new Date(`${currentDayKey}T00:00:00.000Z`).getTime() -
-          new Date(`${existing.lastCheckInDay}T00:00:00.000Z`).getTime() >
-          24 * 60 * 60 * 1000;
-
-      const nextStreak = shouldResetStreak ? 1 : existing.streak + 1;
+      const now = Date.now();
+      const isContinuedStreak =
+        existing.lastCheckInAt !== null &&
+        now <= existing.lastCheckInAt + CHECK_IN_INTERVAL_SECONDS * 2 * 1000;
 
       return {
         ...prev,
         [playerKey]: {
           ...existing,
-          streak: nextStreak,
-          totalCheckIns: existing.totalCheckIns + 1,
-          lastCheckInDay: currentDayKey,
+          streak: onchainPlayer?.streak ?? (isContinuedStreak ? existing.streak + 1 : 1),
+          totalCheckIns: onchainPlayer?.totalCheckIns ?? existing.totalCheckIns + 1,
+          lastCheckInAt: onchainPlayer?.lastCheckInAt ?? now,
           updatedAt: Date.now(),
         },
       };
     });
 
-    setStatus("Чекин подтвержден onchain. +10% множитель к тапам!");
+    setStatus("Чекин подтвержден контрактом. +10% множитель к тапам!");
   }
 
   function updatePlayer(update: (current: LeaderboardPlayer) => LeaderboardPlayer): void {
@@ -235,14 +302,29 @@ export default function HomePage() {
     }
     const walletAddress: Address = address;
 
-    if (player.lastCheckInDay === currentDayKey) {
-      setStatus("Сегодня ты уже сделал чекин. Возвращайся после 00:00 UTC.");
+    if (nextCheckInTimer > 0) {
+      setStatus(`Чекин будет доступен через ${formatCountdown(nextCheckInTimer)}.`);
       return;
     }
 
     setCheckInLoading(true);
     try {
-      setStatus("Подтверди onchain чекин в кошельке...");
+      const secondsUntilNextCheckIn = Number(
+        await baseClient.readContract({
+          address: CHECK_IN_CONTRACT_ADDRESS,
+          abi: checkInAbi,
+          functionName: "secondsUntilNextCheckIn",
+          args: [walletAddress],
+        })
+      );
+
+      if (secondsUntilNextCheckIn > 0) {
+        setNextCheckInTimer(secondsUntilNextCheckIn);
+        setStatus(`Чекин будет доступен через ${formatCountdown(secondsUntilNextCheckIn)}.`);
+        return;
+      }
+
+      setStatus(`Подтверди checkIn() в кошельке. Стоимость: ${CHECK_IN_PRICE_ETH} ETH.`);
 
       let txHash: Hex | null = null;
 
@@ -252,8 +334,12 @@ export default function HomePage() {
           params: [
             {
               from: walletAddress,
-              to: walletAddress,
-              value: "0x1",
+              to: CHECK_IN_CONTRACT_ADDRESS,
+              data: encodeFunctionData({
+                abi: checkInAbi,
+                functionName: "checkIn",
+              }),
+              value: toHex(parseEther(CHECK_IN_PRICE_ETH)),
             },
           ],
         })) as Hex;
@@ -263,15 +349,21 @@ export default function HomePage() {
           await switchChainAsync({ chainId: base.id });
         }
 
-        txHash = await sendTransactionAsync({
+        txHash = await writeContractAsync({
+          address: CHECK_IN_CONTRACT_ADDRESS,
+          abi: checkInAbi,
+          functionName: "checkIn",
           chainId: base.id,
-          to: walletAddress,
-          value: parseEther("0.000000000000000001"),
+          value: parseEther(CHECK_IN_PRICE_ETH),
         });
       }
 
       await baseClient.waitForTransactionReceipt({ hash: txHash });
-      applyConfirmedCheckIn();
+      const onchainPlayer = await syncOnchainPlayer(walletAddress);
+      applyConfirmedCheckIn({
+        ...onchainPlayer,
+        lastCheckInAt: onchainPlayer.lastCheckInAt || Date.now(),
+      });
     } catch (error) {
       setStatus(`Транзакция отклонена или не прошла: ${(error as Error).message}`);
     } finally {
@@ -293,7 +385,7 @@ export default function HomePage() {
     }));
   }
 
-  const alreadyCheckedIn = player?.lastCheckInDay === currentDayKey;
+  const alreadyCheckedIn = nextCheckInTimer > 0;
 
   return (
     <main className="game-shell">
@@ -342,7 +434,10 @@ export default function HomePage() {
           <div className="card">
             <h2>Ончейн чекин (Base Mainnet)</h2>
             <p>
-              До следующего окна чекина: <strong>{formatCountdown(nextCheckInTimer)}</strong> (UTC)
+              До следующего чекина: <strong>{formatCountdown(nextCheckInTimer)}</strong>
+            </p>
+            <p>
+              Стоимость чекина: <strong>{CHECK_IN_PRICE_ETH} ETH</strong>
             </p>
             <p>
               Серия чекинов: <strong>{player?.streak ?? 0}</strong>
@@ -356,14 +451,14 @@ export default function HomePage() {
               disabled={alreadyCheckedIn || checkInLoading}
             >
               {alreadyCheckedIn
-                ? "Чекин уже сделан"
+                ? "Чекин скоро будет доступен"
                 : checkInLoading
                 ? "Ожидание подтверждения..."
                 : "Сделать onchain чекин"}
             </button>
             <small>
-              Если пропустить календарный день (UTC), серия сбрасывается. Каждый чекин дает +10% к
-              каждому тапу.
+              Контракт принимает чек-ин каждые 2 минуты. Каждый успешный чек-ин дает +10% к
+              каждому тапу, пропуск окна сбрасывает серию.
             </small>
           </div>
         ) : null}

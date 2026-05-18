@@ -4,31 +4,16 @@ export type LeaderboardPlayer = {
   score: number;
   streak: number;
   totalCheckIns: number;
-  lastCheckInDay: string | null;
+  lastCheckInAt: number | null;
   updatedAt: number;
 };
 
 type LeaderboardMap = Record<string, LeaderboardPlayer>;
+type StoredLeaderboardPlayer = Partial<LeaderboardPlayer> & {
+  lastCheckInDay?: string | null;
+};
 
 const STORAGE_KEY = "evil-squirrel-leaderboard-v1";
-
-function getUtcDayStart(date = new Date()): Date {
-  return new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
-  );
-}
-
-export function getUtcDayKey(date = new Date()): string {
-  const year = date.getUTCFullYear();
-  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getUTCDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-export function getSecondsUntilNextUtcMidnight(now = new Date()): number {
-  const next = new Date(getUtcDayStart(now).getTime() + 24 * 60 * 60 * 1000);
-  return Math.max(0, Math.floor((next.getTime() - now.getTime()) / 1000));
-}
 
 export function formatCountdown(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -48,7 +33,27 @@ export function safeParseScore(value: number): number {
   return Math.max(0, Math.round(value * 100) / 100);
 }
 
-function normalizePlayer(player: Partial<LeaderboardPlayer>): LeaderboardPlayer {
+export function getSecondsUntilNextCheckIn(
+  lastCheckInAt: number | null | undefined,
+  intervalSeconds: number,
+  now = Date.now()
+): number {
+  if (!lastCheckInAt) {
+    return 0;
+  }
+
+  const nextCheckInAt = lastCheckInAt + intervalSeconds * 1000;
+  return Math.max(0, Math.ceil((nextCheckInAt - now) / 1000));
+}
+
+function normalizePlayer(player: StoredLeaderboardPlayer): LeaderboardPlayer {
+  const legacyDayTimestamp = player.lastCheckInDay
+    ? new Date(`${player.lastCheckInDay}T00:00:00.000Z`).getTime()
+    : null;
+  const lastCheckInAt = Number.isFinite(player.lastCheckInAt)
+    ? player.lastCheckInAt ?? null
+    : legacyDayTimestamp;
+
   return {
     address: player.address ?? "",
     name: player.name ?? "Unnamed Squirrel",
@@ -57,7 +62,7 @@ function normalizePlayer(player: Partial<LeaderboardPlayer>): LeaderboardPlayer 
     totalCheckIns: Number.isFinite(player.totalCheckIns)
       ? Math.max(0, player.totalCheckIns ?? 0)
       : 0,
-    lastCheckInDay: player.lastCheckInDay ?? null,
+    lastCheckInAt,
     updatedAt: Number.isFinite(player.updatedAt) ? player.updatedAt ?? Date.now() : Date.now(),
   };
 }
