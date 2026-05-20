@@ -59,7 +59,7 @@ export default function HomePage() {
   const [nextCheckInTimer, setNextCheckInTimer] = useState<number>(0);
   const [baseAddress, setBaseAddress] = useState<string | null>(null);
   const [checkInLoading, setCheckInLoading] = useState(false);
-  const [walletSource, setWalletSource] = useState<"base" | "farcaster" | null>(null);
+  const [walletSource, setWalletSource] = useState<"base" | "wagmi" | null>(null);
   const [showWalletOptions, setShowWalletOptions] = useState(false);
   const attemptedAutoConnectRef = useRef(false);
 
@@ -273,7 +273,7 @@ export default function HomePage() {
 
   const connectFarcaster = useCallback(async (interactive: boolean): Promise<boolean> => {
     if (isConnected && farcasterAddress) {
-      setWalletSource("farcaster");
+      setWalletSource("wagmi");
       return true;
     }
 
@@ -281,14 +281,14 @@ export default function HomePage() {
       return false;
     }
 
-    const connector = connectors[0];
+    const connector = connectors.find((item) => item.name.toLowerCase().includes("farcaster"));
     if (!connector) {
       return false;
     }
 
     try {
       await connect({ connector });
-      setWalletSource("farcaster");
+      setWalletSource("wagmi");
       return true;
     } catch {
       return false;
@@ -296,7 +296,25 @@ export default function HomePage() {
   }, [connect, connectors, farcasterAddress, isConnected]);
 
   const ensureAnyWalletConnected = useCallback(async (interactive: boolean): Promise<boolean> => {
-    if (await connectBaseAccount(interactive)) {
+    if (isConnected && farcasterAddress) {
+      setWalletSource("wagmi");
+      setStatus("Подключен кошелек сайта.");
+      return true;
+    }
+
+    if (interactive && preferredConnector) {
+      try {
+        await connectAsync({ connector: preferredConnector, chainId: base.id });
+        setBaseAddress(null);
+        setWalletSource("wagmi");
+        setStatus(`Подключен кошелек: ${preferredConnector.name}.`);
+        return true;
+      } catch {
+        setShowWalletOptions(true);
+      }
+    }
+
+    if (await connectBaseAccount(false)) {
       setStatus("Подключен Base Account SDK.");
       return true;
     }
@@ -307,10 +325,17 @@ export default function HomePage() {
     }
 
     if (interactive) {
-      setStatus("Не удалось получить кошелек. Открой игру внутри Base App или Farcaster.");
+      setStatus("Выбери Rabby, MetaMask, Base Account или Farcaster для подключения.");
     }
     return false;
-  }, [connectBaseAccount, connectFarcaster]);
+  }, [
+    connectAsync,
+    connectBaseAccount,
+    connectFarcaster,
+    farcasterAddress,
+    isConnected,
+    preferredConnector,
+  ]);
 
   const handleConnectWallet = useCallback(
     async (connector = preferredConnector): Promise<void> => {
@@ -322,7 +347,7 @@ export default function HomePage() {
       try {
         await connectAsync({ connector, chainId: base.id });
         setBaseAddress(null);
-        setWalletSource("farcaster");
+        setWalletSource("wagmi");
         setShowWalletOptions(false);
         setStatus(`Подключен кошелек: ${connector.name}.`);
       } catch (error) {
