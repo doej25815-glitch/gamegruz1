@@ -59,6 +59,7 @@ export default function HomePage() {
   const [nextCheckInTimer, setNextCheckInTimer] = useState<number>(0);
   const [baseAddress, setBaseAddress] = useState<string | null>(null);
   const [checkInLoading, setCheckInLoading] = useState(false);
+  const [pendingTaps, setPendingTaps] = useState(0);
   const [walletSource, setWalletSource] = useState<"base" | "wagmi" | null>(null);
   const [showWalletOptions, setShowWalletOptions] = useState(false);
   const attemptedAutoConnectRef = useRef(false);
@@ -469,11 +470,28 @@ export default function HomePage() {
       return;
     }
 
+    setPendingTaps((current) => current + 1);
     updatePlayer((current) => ({
       ...current,
       score: safeParseScore(current.score + pointsPerTap),
       name: getDisplayName(current.address),
     }));
+  }
+
+  async function handleSendTaps(): Promise<void> {
+    const connected = await ensureAnyWalletConnected(true);
+    if (!connected || !address || !player) {
+      return;
+    }
+
+    if (pendingTaps === 0) {
+      setStatus("Сначала сделай несколько тапов, потом отправь их.");
+      return;
+    }
+
+    setStatus(
+      "Кнопка добавлена, но текущий контракт EvilSquirrelCheckIn не содержит функцию tap(). Для реальной отправки тапов нужен новый контракт с tap/syncTaps, как в Robo Tapper."
+    );
   }
 
   const alreadyCheckedIn = nextCheckInTimer > 0;
@@ -562,9 +580,24 @@ export default function HomePage() {
             <p>
               Текущий счет: <strong>{player?.score.toFixed(2) ?? "0.00"}</strong>
             </p>
+            <p>
+              Тапов к отправке: <strong>{pendingTaps}</strong>
+            </p>
             <button type="button" className="squirrel" onClick={handleTap}>
               🐿️🥜
             </button>
+            <button
+              type="button"
+              className="send-taps"
+              onClick={() => void handleSendTaps()}
+              disabled={pendingTaps === 0}
+            >
+              Отправить тапы
+            </button>
+            <small>
+              Сейчас кнопка показывает накопленные тапы. Для настоящей onchain-отправки нужен
+              контракт с функцией tap/syncTaps.
+            </small>
           </div>
         ) : null}
 

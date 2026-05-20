@@ -156,6 +156,12 @@ body {
   transform: scale(0.98);
 }
 
+.send-taps {
+  display: block;
+  width: min(280px, 85vw);
+  margin: 12px auto 8px;
+}
+
 .leaderboard {
   display: grid;
   gap: 8px;
