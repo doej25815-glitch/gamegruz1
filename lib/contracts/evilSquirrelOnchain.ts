@@ -1,9 +1,8 @@
 export const EVIL_SQUIRREL_CHECKIN_PRICE_ETH = "0.00001";
 export const EVIL_SQUIRREL_CHECKIN_INTERVAL_SECONDS = 120;
 
-// После деплоя в Remix замени на новый адрес EvilSquirrelOnchain:
 export const EVIL_SQUIRREL_CONTRACT_ADDRESS =
-  "0x0000000000000000000000000000000000000000" as const;
+  "0x746f1F48f92B5de041bd8FE29e171B29a248e49c" as const;
 
 export const EVIL_SQUIRREL_BUILDER_CODE = "bc_orvodcta";
 export const EVIL_SQUIRREL_BUILDER_CODE_DATA_SUFFIX =
