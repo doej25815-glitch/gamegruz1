@@ -12,7 +12,7 @@ import {
   type Address,
   type Hex,
 } from "viem";
-import { useAccount, useConnect, useSendTransaction, useSwitchChain } from "wagmi";
+import { useAccount, useConnect, useDisconnect, useSendTransaction, useSwitchChain } from "wagmi";
 import {
   BASE_BUILDER_CODE_DATA_SUFFIX,
   CHECK_IN_CONTRACT_ADDRESS,
@@ -46,7 +46,8 @@ function withBuilderCodeDataSuffix(data: Hex): Hex {
 
 export default function HomePage() {
   const { address: farcasterAddress, isConnected, chainId } = useAccount();
-  const { connect, connectors } = useConnect();
+  const { connect, connectAsync, connectors, isPending: isConnectPending } = useConnect();
+  const { disconnect } = useDisconnect();
   const { switchChainAsync } = useSwitchChain();
   const { sendTransactionAsync } = useSendTransaction();
 
@@ -59,6 +60,7 @@ export default function HomePage() {
   const [baseAddress, setBaseAddress] = useState<string | null>(null);
   const [checkInLoading, setCheckInLoading] = useState(false);
   const [walletSource, setWalletSource] = useState<"base" | "farcaster" | null>(null);
+  const [showWalletOptions, setShowWalletOptions] = useState(false);
   const attemptedAutoConnectRef = useRef(false);
 
   const baseProvider = useMemo(() => {
@@ -97,6 +99,28 @@ export default function HomePage() {
   const tapMultiplier = getTapMultiplier(player?.streak ?? 0);
   const pointsPerTap = safeParseScore(tapMultiplier);
   const leaderboard = toSortedLeaderboard(leaderboardMap).slice(0, 20);
+  const walletConnectors = useMemo(
+    () =>
+      connectors.filter((connector) => {
+        const name = connector.name.toLowerCase();
+        return (
+          name.includes("rabby") ||
+          name.includes("metamask") ||
+          name.includes("injected") ||
+          name.includes("base") ||
+          name.includes("farcaster")
+        );
+      }),
+    [connectors]
+  );
+  const preferredConnector = useMemo(
+    () =>
+      walletConnectors.find((connector) => connector.name.toLowerCase().includes("rabby")) ??
+      walletConnectors.find((connector) => connector.name.toLowerCase().includes("metamask")) ??
+      walletConnectors.find((connector) => connector.name.toLowerCase().includes("injected")) ??
+      walletConnectors[0],
+    [walletConnectors]
+  );
 
   useEffect(() => {
     setLeaderboardMap(loadLeaderboard());
@@ -288,6 +312,34 @@ export default function HomePage() {
     return false;
   }, [connectBaseAccount, connectFarcaster]);
 
+  const handleConnectWallet = useCallback(
+    async (connector = preferredConnector): Promise<void> => {
+      if (!connector) {
+        setStatus("Установи Rabby или MetaMask и попробуй подключить кошелек снова.");
+        return;
+      }
+
+      try {
+        await connectAsync({ connector, chainId: base.id });
+        setBaseAddress(null);
+        setWalletSource("farcaster");
+        setShowWalletOptions(false);
+        setStatus(`Подключен кошелек: ${connector.name}.`);
+      } catch (error) {
+        setShowWalletOptions(true);
+        setStatus(`Не удалось подключить кошелек: ${(error as Error).message}`);
+      }
+    },
+    [connectAsync, preferredConnector]
+  );
+
+  const handleDisconnectWallet = useCallback((): void => {
+    setBaseAddress(null);
+    setWalletSource(null);
+    disconnect();
+    setStatus("Кошелек отключен.");
+  }, [disconnect]);
+
   useEffect(() => {
     if (attemptedAutoConnectRef.current) {
       return;
@@ -408,6 +460,53 @@ export default function HomePage() {
           <h1>Evil Squirrel Tap</h1>
           <p>Тапай злую белку, делай ежедневный onchain чекин и расти в лидерборде.</p>
         </header>
+
+        <section className="wallet-panel" aria-label="Подключение кошелька">
+          {address ? (
+            <div className="wallet-line">
+              <span>{getDisplayName(address)}</span>
+              <span>{address.slice(0, 6)}...{address.slice(-4)}</span>
+              <button type="button" onClick={handleDisconnectWallet}>
+                Отключить
+              </button>
+            </div>
+          ) : (
+            <>
+              <p>Подключи Rabby, MetaMask, Base Account или Farcaster, чтобы играть через сайт.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  if (walletConnectors.length > 1) {
+                    setShowWalletOptions((current) => !current);
+                    return;
+                  }
+                  void handleConnectWallet();
+                }}
+                disabled={isConnectPending}
+              >
+                {isConnectPending ? "Подключение..." : "Подключить кошелек"}
+              </button>
+              {showWalletOptions ? (
+                <div className="wallet-options">
+                  {walletConnectors.length === 0 ? (
+                    <small>Rabby или MetaMask не найдены в браузере.</small>
+                  ) : (
+                    walletConnectors.map((connector) => (
+                      <button
+                        type="button"
+                        key={connector.uid}
+                        onClick={() => void handleConnectWallet(connector)}
+                        disabled={isConnectPending}
+                      >
+                        {connector.name}
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </>
+          )}
+        </section>
 
         <nav className="menu-grid" aria-label="Главное меню">
           <button type="button" onClick={() => setScreen("leaderboard")}>

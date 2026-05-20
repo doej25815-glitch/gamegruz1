@@ -56,6 +56,45 @@ body {
   margin: 0 0 14px;
 }
 
+.wallet-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 2px solid rgba(108, 73, 34, 0.35);
+  border-radius: 14px;
+  background: rgba(255, 252, 243, 0.74);
+}
+
+.wallet-panel p {
+  margin: 0;
+}
+
+.wallet-panel button,
+.wallet-line button {
+  border: 2px solid #6c4922;
+  border-radius: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 700;
+  color: #2f1f10;
+  background: linear-gradient(180deg, #d5a86c 0%, #b3783d 100%);
+}
+
+.wallet-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wallet-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .menu-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
