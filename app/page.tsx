@@ -1,29 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createBaseAccountSDK } from "@base-org/account";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPublicClient, encodeFunctionData, http, isAddress, parseEther, type Address } from "viem";
 import {
-  createPublicClient,
-  encodeFunctionData,
-  http,
-  isAddress,
-  parseEther,
-  toHex,
-  type Address,
-  type Hex,
-} from "viem";
-import { useAccount, useConnect, useDisconnect, useSendTransaction, useSwitchChain } from "wagmi";
+  useAccount,
+  useConnect,
+  useDisconnect,
+  useSendTransaction,
+  useSwitchChain,
+  useWaitForTransactionReceipt,
+} from "wagmi";
+import { base } from "wagmi/chains";
 import {
-  BASE_BUILDER_CODE_DATA_SUFFIX,
-  CHECK_IN_CONTRACT_ADDRESS,
-  CHECK_IN_INTERVAL_SECONDS,
-  CHECK_IN_PRICE_ETH,
-  checkInAbi,
-} from "@/lib/checkInContract";
+  EVIL_SQUIRREL_CHECKIN_INTERVAL_SECONDS,
+  EVIL_SQUIRREL_CHECKIN_PRICE_ETH,
+  evilSquirrelOnchainAbi,
+  getEvilSquirrelContractAddress,
+  withEvilSquirrelBuilderCodeDataSuffix,
+} from "@/lib/contracts/evilSquirrelOnchain";
 import {
   formatCountdown,
   getDisplayName,
-  getSecondsUntilNextCheckIn,
   getTapMultiplier,
   loadLeaderboard,
   saveLeaderboard,
@@ -31,7 +28,6 @@ import {
   toSortedLeaderboard,
   type LeaderboardPlayer,
 } from "@/lib/gameState";
-import { base } from "wagmi/chains";
 
 type Screen = "menu" | "leaderboard" | "checkin" | "tap";
 
@@ -40,43 +36,34 @@ const baseClient = createPublicClient({
   transport: http(),
 });
 
-function withBuilderCodeDataSuffix(data: Hex): Hex {
-  return `${data}${BASE_BUILDER_CODE_DATA_SUFFIX.slice(2)}` as Hex;
+const contractAddress = getEvilSquirrelContractAddress();
+
+function slotToTimestamp(slot: number): number | null {
+  if (slot === 0) {
+    return null;
+  }
+  return slot * EVIL_SQUIRREL_CHECKIN_INTERVAL_SECONDS * 1000;
 }
 
 export default function HomePage() {
-  const { address: farcasterAddress, isConnected, chainId } = useAccount();
-  const { connect, connectAsync, connectors, isPending: isConnectPending } = useConnect();
+  const { address, isConnected, chainId } = useAccount();
+  const { connectAsync, connectors, isPending: isConnectPending } = useConnect();
   const { disconnect } = useDisconnect();
   const { switchChainAsync } = useSwitchChain();
-  const { sendTransactionAsync } = useSendTransaction();
+  const { data: txHash, isPending: isWritePending, sendTransactionAsync } = useSendTransaction();
+  const { isLoading: isTxMining, isSuccess: isTxMined } = useWaitForTransactionReceipt({
+    hash: txHash,
+    query: { enabled: Boolean(txHash) },
+  });
 
   const [screen, setScreen] = useState<Screen>("menu");
   const [leaderboardMap, setLeaderboardMap] = useState<Record<string, LeaderboardPlayer>>({});
-  const [status, setStatus] = useState<string>(
-    "Ожидаю кошелек из Base App/Farcaster. Интерфейс подключения скрыт."
-  );
-  const [nextCheckInTimer, setNextCheckInTimer] = useState<number>(0);
-  const [baseAddress, setBaseAddress] = useState<string | null>(null);
-  const [checkInLoading, setCheckInLoading] = useState(false);
+  const [status, setStatus] = useState("Подключи кошелек, чтобы играть через сайт.");
+  const [nextCheckInTimer, setNextCheckInTimer] = useState(0);
   const [pendingTaps, setPendingTaps] = useState(0);
-  const [walletSource, setWalletSource] = useState<"base" | "wagmi" | null>(null);
+  const [isSubmittingTap, setIsSubmittingTap] = useState(false);
+  const [isSubmittingCheckin, setIsSubmittingCheckin] = useState(false);
   const [showWalletOptions, setShowWalletOptions] = useState(false);
-  const attemptedAutoConnectRef = useRef(false);
-
-  const baseProvider = useMemo(() => {
-    try {
-      const sdk = createBaseAccountSDK({
-        appName: "Evil Squirrel Tap",
-        appChainIds: [base.id],
-      });
-      return sdk.getProvider();
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const address = baseAddress ?? farcasterAddress;
 
   const playerKey = address?.toLowerCase() ?? "";
 
@@ -99,7 +86,12 @@ export default function HomePage() {
 
   const tapMultiplier = getTapMultiplier(player?.streak ?? 0);
   const pointsPerTap = safeParseScore(tapMultiplier);
+  const projectedScore = safeParseScore((player?.score ?? 0) + pendingTaps * pointsPerTap);
   const leaderboard = toSortedLeaderboard(leaderboardMap).slice(0, 20);
+  const isCorrectChain = chainId === base.id;
+  const isBusy = isWritePending || isTxMining || isSubmittingTap || isSubmittingCheckin;
+  const canCheckInNow = player ? nextCheckInTimer === 0 : false;
+
   const walletConnectors = useMemo(
     () =>
       connectors.filter((connector) => {
@@ -114,6 +106,7 @@ export default function HomePage() {
       }),
     [connectors]
   );
+
   const preferredConnector = useMemo(
     () =>
       walletConnectors.find((connector) => connector.name.toLowerCase().includes("rabby")) ??
@@ -131,38 +124,15 @@ export default function HomePage() {
     saveLeaderboard(leaderboardMap);
   }, [leaderboardMap]);
 
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      setNextCheckInTimer(
-        getSecondsUntilNextCheckIn(player?.lastCheckInAt, CHECK_IN_INTERVAL_SECONDS)
-      );
-    }, 1000);
-
-    setNextCheckInTimer(
-      getSecondsUntilNextCheckIn(player?.lastCheckInAt, CHECK_IN_INTERVAL_SECONDS)
-    );
-
-    return () => window.clearInterval(interval);
-  }, [player?.lastCheckInAt]);
-
-  const syncOnchainPlayer = useCallback(async (walletAddress: Address): Promise<{
-    lastCheckInAt: number;
-    streak: number;
-    totalCheckIns: number;
-  }> => {
-    const [lastCheckInAt, streak, totalCheckIns] = await baseClient.readContract({
-      address: CHECK_IN_CONTRACT_ADDRESS,
-      abi: checkInAbi,
+  const syncOnchainPlayer = useCallback(async (walletAddress: Address): Promise<void> => {
+    const [score, streak, lastCheckinSlot, , totalCheckins] = await baseClient.readContract({
+      address: contractAddress,
+      abi: evilSquirrelOnchainAbi,
       functionName: "getPlayer",
       args: [walletAddress],
     });
 
     const normalizedAddress = walletAddress.toLowerCase();
-    const onchainPlayer = {
-      lastCheckInAt: Number(lastCheckInAt) === 0 ? 0 : Number(lastCheckInAt) * 1000,
-      streak: Number(streak),
-      totalCheckIns: Number(totalCheckIns),
-    };
 
     setLeaderboardMap((prev) => {
       const existing = prev[normalizedAddress] ?? {
@@ -175,19 +145,29 @@ export default function HomePage() {
         updatedAt: Date.now(),
       };
 
+      const lastCheckInAt = slotToTimestamp(Number(lastCheckinSlot));
+
       return {
         ...prev,
         [normalizedAddress]: {
           ...existing,
-          streak: onchainPlayer.streak,
-          totalCheckIns: onchainPlayer.totalCheckIns,
-          lastCheckInAt: onchainPlayer.lastCheckInAt === 0 ? null : onchainPlayer.lastCheckInAt,
+          score: safeParseScore(Number(score)),
+          streak: Number(streak),
+          totalCheckIns: Number(totalCheckins),
+          lastCheckInAt,
           updatedAt: Date.now(),
         },
       };
     });
 
-    return onchainPlayer;
+    if (Number(lastCheckinSlot) > 0) {
+      const nextAt =
+        Number(lastCheckinSlot) * EVIL_SQUIRREL_CHECKIN_INTERVAL_SECONDS * 1000 +
+        EVIL_SQUIRREL_CHECKIN_INTERVAL_SECONDS * 1000;
+      setNextCheckInTimer(Math.max(0, Math.ceil((nextAt - Date.now()) / 1000)));
+    } else {
+      setNextCheckInTimer(0);
+    }
   }, []);
 
   useEffect(() => {
@@ -196,147 +176,66 @@ export default function HomePage() {
     }
 
     syncOnchainPlayer(address).catch(() => {
-      // Keep local cached state if the public RPC read is temporarily unavailable.
+      // Keep local cached state if RPC is temporarily unavailable.
     });
   }, [address, syncOnchainPlayer]);
 
-  function applyConfirmedCheckIn(onchainPlayer?: {
-    lastCheckInAt: number;
-    streak: number;
-    totalCheckIns: number;
-  }): void {
-    if (!player || !playerKey) {
-      return;
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (!player?.lastCheckInAt) {
+        setNextCheckInTimer(0);
+        return;
+      }
+      const nextAt = player.lastCheckInAt + EVIL_SQUIRREL_CHECKIN_INTERVAL_SECONDS * 1000;
+      setNextCheckInTimer(Math.max(0, Math.ceil((nextAt - Date.now()) / 1000)));
+    }, 1000);
+
+    if (!player?.lastCheckInAt) {
+      setNextCheckInTimer(0);
+    } else {
+      const nextAt = player.lastCheckInAt + EVIL_SQUIRREL_CHECKIN_INTERVAL_SECONDS * 1000;
+      setNextCheckInTimer(Math.max(0, Math.ceil((nextAt - Date.now()) / 1000)));
     }
 
-    setLeaderboardMap((prev) => {
-      const existing = prev[playerKey] ?? player;
-      const now = Date.now();
-      const isContinuedStreak =
-        existing.lastCheckInAt !== null &&
-        now <= existing.lastCheckInAt + CHECK_IN_INTERVAL_SECONDS * 2 * 1000;
+    return () => window.clearInterval(interval);
+  }, [player?.lastCheckInAt]);
 
-      return {
-        ...prev,
-        [playerKey]: {
-          ...existing,
-          streak: onchainPlayer?.streak ?? (isContinuedStreak ? existing.streak + 1 : 1),
-          totalCheckIns: onchainPlayer?.totalCheckIns ?? existing.totalCheckIns + 1,
-          lastCheckInAt: onchainPlayer?.lastCheckInAt ?? now,
-          updatedAt: Date.now(),
-        },
-      };
-    });
-
-    setStatus("Чекин подтвержден контрактом. +10% множитель к тапам!");
-  }
-
-  function updatePlayer(update: (current: LeaderboardPlayer) => LeaderboardPlayer): void {
-    if (!player || !playerKey) {
-      return;
-    }
-
-    setLeaderboardMap((prev) => {
-      const current = prev[playerKey] ?? player;
-      return {
-        ...prev,
-        [playerKey]: {
-          ...update(current),
-          updatedAt: Date.now(),
-        },
-      };
-    });
-  }
-
-  const connectBaseAccount = useCallback(async (interactive: boolean): Promise<boolean> => {
-    if (!baseProvider) {
-      return false;
-    }
-
-    try {
-      const method = interactive ? "eth_requestAccounts" : "eth_accounts";
-      const accounts = (await baseProvider.request({
-        method,
-      })) as string[];
-
-      const first = accounts?.[0];
-      if (!first) {
-        return false;
+  useEffect(() => {
+    const refreshAfterCheckin = async () => {
+      if (!isTxMined || !isSubmittingCheckin || !address) {
+        return;
       }
 
-      setBaseAddress(first.toLowerCase());
-      setWalletSource("base");
-      return true;
-    } catch {
-      return false;
-    }
-  }, [baseProvider]);
-
-  const connectFarcaster = useCallback(async (interactive: boolean): Promise<boolean> => {
-    if (isConnected && farcasterAddress) {
-      setWalletSource("wagmi");
-      return true;
-    }
-
-    if (!interactive) {
-      return false;
-    }
-
-    const connector = connectors.find((item) => item.name.toLowerCase().includes("farcaster"));
-    if (!connector) {
-      return false;
-    }
-
-    try {
-      await connect({ connector });
-      setWalletSource("wagmi");
-      return true;
-    } catch {
-      return false;
-    }
-  }, [connect, connectors, farcasterAddress, isConnected]);
-
-  const ensureAnyWalletConnected = useCallback(async (interactive: boolean): Promise<boolean> => {
-    if (isConnected && farcasterAddress) {
-      setWalletSource("wagmi");
-      setStatus("Подключен кошелек сайта.");
-      return true;
-    }
-
-    if (interactive && preferredConnector) {
+      setIsSubmittingCheckin(false);
       try {
-        await connectAsync({ connector: preferredConnector, chainId: base.id });
-        setBaseAddress(null);
-        setWalletSource("wagmi");
-        setStatus(`Подключен кошелек: ${preferredConnector.name}.`);
-        return true;
+        await syncOnchainPlayer(address);
+        setStatus("Чекин подтвержден контрактом. +10% множитель к тапам!");
       } catch {
-        setShowWalletOptions(true);
+        setStatus("Чекин подтвержден. Состояние обновится при следующем чтении контракта.");
       }
-    }
+    };
 
-    if (await connectBaseAccount(false)) {
-      setStatus("Подключен Base Account SDK.");
-      return true;
-    }
+    void refreshAfterCheckin();
+  }, [address, isSubmittingCheckin, isTxMined, syncOnchainPlayer]);
 
-    if (await connectFarcaster(interactive)) {
-      setStatus("Подключен Farcaster Mini App кошелек.");
-      return true;
-    }
+  useEffect(() => {
+    const refreshAfterTap = async () => {
+      if (!isTxMined || !isSubmittingTap || !address) {
+        return;
+      }
 
-    if (interactive) {
-      setStatus("Выбери Rabby, MetaMask, Base Account или Farcaster для подключения.");
-    }
-    return false;
-  }, [
-    connectAsync,
-    connectBaseAccount,
-    connectFarcaster,
-    farcasterAddress,
-    isConnected,
-    preferredConnector,
-  ]);
+      setPendingTaps(0);
+      setIsSubmittingTap(false);
+      try {
+        await syncOnchainPlayer(address);
+        setStatus("Тапы отправлены onchain.");
+      } catch {
+        setStatus("Тапы отправлены. Счет обновится при следующем чтении контракта.");
+      }
+    };
+
+    void refreshAfterTap();
+  }, [address, isSubmittingTap, isTxMined, syncOnchainPlayer]);
 
   const handleConnectWallet = useCallback(
     async (connector = preferredConnector): Promise<void> => {
@@ -347,8 +246,6 @@ export default function HomePage() {
 
       try {
         await connectAsync({ connector, chainId: base.id });
-        setBaseAddress(null);
-        setWalletSource("wagmi");
         setShowWalletOptions(false);
         setStatus(`Подключен кошелек: ${connector.name}.`);
       } catch (error) {
@@ -360,155 +257,130 @@ export default function HomePage() {
   );
 
   const handleDisconnectWallet = useCallback((): void => {
-    setBaseAddress(null);
-    setWalletSource(null);
     disconnect();
+    setPendingTaps(0);
     setStatus("Кошелек отключен.");
   }, [disconnect]);
 
-  useEffect(() => {
-    if (attemptedAutoConnectRef.current) {
+  const ensureWalletReady = useCallback(async (): Promise<boolean> => {
+    if (!isConnected || !address) {
+      if (preferredConnector) {
+        try {
+          await connectAsync({ connector: preferredConnector, chainId: base.id });
+          setStatus(`Подключен кошелек: ${preferredConnector.name}.`);
+          return true;
+        } catch {
+          setShowWalletOptions(true);
+          setStatus("Подключи Rabby, MetaMask или Base Account.");
+          return false;
+        }
+      }
+      setStatus("Подключи кошелек.");
+      return false;
+    }
+
+    if (chainId !== base.id) {
+      try {
+        await switchChainAsync({ chainId: base.id });
+      } catch {
+        setStatus("Переключи сеть кошелька на Base Mainnet.");
+        return false;
+      }
+    }
+
+    if (contractAddress === "0x0000000000000000000000000000000000000000") {
+      setStatus("Укажи адрес задеплоенного контракта в lib/contracts/evilSquirrelOnchain.ts");
+      return false;
+    }
+
+    return true;
+  }, [address, chainId, connectAsync, isConnected, preferredConnector, switchChainAsync]);
+
+  function handleTap(): void {
+    if (!player) {
+      void ensureWalletReady();
       return;
     }
-    attemptedAutoConnectRef.current = true;
-    void ensureAnyWalletConnected(false);
-  }, [ensureAnyWalletConnected]);
+    setPendingTaps((current) => current + 1);
+  }
+
+  async function handleSendTaps(): Promise<void> {
+    if (!(await ensureWalletReady()) || !address || pendingTaps <= 0) {
+      return;
+    }
+
+    setIsSubmittingTap(true);
+    setStatus(`Подтверди tap(${pendingTaps}) в кошельке.`);
+
+    try {
+      const data = withEvilSquirrelBuilderCodeDataSuffix(
+        encodeFunctionData({
+          abi: evilSquirrelOnchainAbi,
+          functionName: "tap",
+          args: [BigInt(pendingTaps)],
+        })
+      );
+
+      await sendTransactionAsync({
+        chainId: base.id,
+        to: contractAddress,
+        data,
+        value: BigInt(0),
+      });
+    } catch (error) {
+      setIsSubmittingTap(false);
+      setStatus(`Транзакция отклонена или не прошла: ${(error as Error).message}`);
+    }
+  }
 
   async function handleCheckIn(): Promise<void> {
-    const connected = await ensureAnyWalletConnected(true);
-    if (!connected || !address || !player) {
+    if (!(await ensureWalletReady()) || !address || !player) {
       return;
     }
-    if (!isAddress(address)) {
-      setStatus("Некорректный адрес кошелька.");
-      return;
-    }
-    const walletAddress: Address = address;
 
-    if (nextCheckInTimer > 0) {
+    if (!canCheckInNow) {
       setStatus(`Чекин будет доступен через ${formatCountdown(nextCheckInTimer)}.`);
       return;
     }
 
-    setCheckInLoading(true);
+    setIsSubmittingCheckin(true);
+    setStatus(`Подтверди checkIn() в кошельке. Стоимость: ${EVIL_SQUIRREL_CHECKIN_PRICE_ETH} ETH.`);
+
     try {
-      const secondsUntilNextCheckIn = Number(
-        await baseClient.readContract({
-          address: CHECK_IN_CONTRACT_ADDRESS,
-          abi: checkInAbi,
-          functionName: "secondsUntilNextCheckIn",
-          args: [walletAddress],
-        })
-      );
-
-      if (secondsUntilNextCheckIn > 0) {
-        setNextCheckInTimer(secondsUntilNextCheckIn);
-        setStatus(`Чекин будет доступен через ${formatCountdown(secondsUntilNextCheckIn)}.`);
-        return;
-      }
-
-      setStatus(`Подтверди checkIn() в кошельке. Стоимость: ${CHECK_IN_PRICE_ETH} ETH.`);
-
-      let txHash: Hex | null = null;
-      const checkInData = withBuilderCodeDataSuffix(
+      const data = withEvilSquirrelBuilderCodeDataSuffix(
         encodeFunctionData({
-          abi: checkInAbi,
+          abi: evilSquirrelOnchainAbi,
           functionName: "checkIn",
         })
       );
 
-      if (baseProvider && walletSource === "base") {
-        const hash = (await baseProvider.request({
-          method: "eth_sendTransaction",
-          params: [
-            {
-              from: walletAddress,
-              to: CHECK_IN_CONTRACT_ADDRESS,
-              data: checkInData,
-              value: toHex(parseEther(CHECK_IN_PRICE_ETH)),
-            },
-          ],
-        })) as Hex;
-        txHash = hash;
-      } else {
-        if (chainId !== base.id) {
-          await switchChainAsync({ chainId: base.id });
-        }
-
-        txHash = await sendTransactionAsync({
-          chainId: base.id,
-          to: CHECK_IN_CONTRACT_ADDRESS,
-          data: checkInData,
-          value: parseEther(CHECK_IN_PRICE_ETH),
-        });
-      }
-
-      await baseClient.waitForTransactionReceipt({ hash: txHash });
-
-      try {
-        const onchainPlayer = await syncOnchainPlayer(walletAddress);
-        applyConfirmedCheckIn({
-          ...onchainPlayer,
-          lastCheckInAt: onchainPlayer.lastCheckInAt || Date.now(),
-        });
-      } catch {
-        // Some in-app webviews can briefly lose public RPC access after wallet return.
-        // The transaction is already confirmed, so keep the game responsive locally.
-        applyConfirmedCheckIn();
-      }
+      await sendTransactionAsync({
+        chainId: base.id,
+        to: contractAddress,
+        data,
+        value: parseEther(EVIL_SQUIRREL_CHECKIN_PRICE_ETH),
+      });
     } catch (error) {
+      setIsSubmittingCheckin(false);
       setStatus(`Транзакция отклонена или не прошла: ${(error as Error).message}`);
-    } finally {
-      setCheckInLoading(false);
     }
   }
-
-  function handleTap(): void {
-    if (!player) {
-      void ensureAnyWalletConnected(true);
-      setStatus("Нужен кошелек из Base App/Farcaster, чтобы копить очки.");
-      return;
-    }
-
-    setPendingTaps((current) => current + 1);
-    updatePlayer((current) => ({
-      ...current,
-      score: safeParseScore(current.score + pointsPerTap),
-      name: getDisplayName(current.address),
-    }));
-  }
-
-  async function handleSendTaps(): Promise<void> {
-    const connected = await ensureAnyWalletConnected(true);
-    if (!connected || !address || !player) {
-      return;
-    }
-
-    if (pendingTaps === 0) {
-      setStatus("Сначала сделай несколько тапов, потом отправь их.");
-      return;
-    }
-
-    setStatus(
-      "Кнопка добавлена, но текущий контракт EvilSquirrelCheckIn не содержит функцию tap(). Для реальной отправки тапов нужен новый контракт с tap/syncTaps, как в Robo Tapper."
-    );
-  }
-
-  const alreadyCheckedIn = nextCheckInTimer > 0;
 
   return (
     <main className="game-shell">
       <section className="game-panel">
         <header className="game-header">
           <h1>Evil Squirrel Tap</h1>
-          <p>Тапай злую белку, делай ежедневный onchain чекин и расти в лидерборде.</p>
+          <p>Тапай злую белку, делай onchain чекин и расти в лидерборде.</p>
         </header>
 
         <section className="wallet-panel" aria-label="Подключение кошелька">
-          {address ? (
+          {address && isConnected ? (
             <div className="wallet-line">
               <span>{getDisplayName(address)}</span>
-              <span>{address.slice(0, 6)}...{address.slice(-4)}</span>
+              <span>
+                {address.slice(0, 6)}...{address.slice(-4)}
+              </span>
               <button type="button" onClick={handleDisconnectWallet}>
                 Отключить
               </button>
@@ -551,6 +423,10 @@ export default function HomePage() {
           )}
         </section>
 
+        {isConnected && !isCorrectChain ? (
+          <p className="status">Переключите сеть кошелька на Base Mainnet.</p>
+        ) : null}
+
         <nav className="menu-grid" aria-label="Главное меню">
           <button type="button" onClick={() => setScreen("leaderboard")}>
             Лидерборд
@@ -566,7 +442,7 @@ export default function HomePage() {
         {screen === "menu" ? (
           <div className="card">
             <h2>Меню игры</h2>
-            <p>Выбери режим: таблица лидеров, ежедневный чекин или режим тапалки.</p>
+            <p>Выбери режим: таблица лидеров, onchain чекин или режим тапалки.</p>
           </div>
         ) : null}
 
@@ -578,26 +454,25 @@ export default function HomePage() {
               <strong>x{tapMultiplier.toFixed(2)}</strong>)
             </p>
             <p>
-              Текущий счет: <strong>{player?.score.toFixed(2) ?? "0.00"}</strong>
+              Текущий счет: <strong>{projectedScore.toFixed(2)}</strong>
             </p>
             <p>
               Тапов к отправке: <strong>{pendingTaps}</strong>
             </p>
-            <button type="button" className="squirrel" onClick={handleTap}>
+            <button type="button" className="squirrel" onClick={handleTap} disabled={isBusy || !isCorrectChain}>
               🐿️🥜
             </button>
             <button
               type="button"
               className="send-taps"
               onClick={() => void handleSendTaps()}
-              disabled={pendingTaps === 0}
+              disabled={pendingTaps <= 0 || isBusy || !isCorrectChain || !isConnected}
             >
-              Отправить тапы
+              {isSubmittingTap || isWritePending || isTxMining
+                ? "Транзакция..."
+                : `Отправить ${pendingTaps} тап(ов) onchain`}
             </button>
-            <small>
-              Сейчас кнопка показывает накопленные тапы. Для настоящей onchain-отправки нужен
-              контракт с функцией tap/syncTaps.
-            </small>
+            <small>Тапы копятся локально, затем одной транзакцией уходят в контракт tap().</small>
           </div>
         ) : null}
 
@@ -608,7 +483,7 @@ export default function HomePage() {
               До следующего чекина: <strong>{formatCountdown(nextCheckInTimer)}</strong>
             </p>
             <p>
-              Стоимость чекина: <strong>{CHECK_IN_PRICE_ETH} ETH</strong>
+              Стоимость чекина: <strong>{EVIL_SQUIRREL_CHECKIN_PRICE_ETH} ETH</strong>
             </p>
             <p>
               Серия чекинов: <strong>{player?.streak ?? 0}</strong>
@@ -618,18 +493,17 @@ export default function HomePage() {
             </p>
             <button
               type="button"
-              onClick={handleCheckIn}
-              disabled={alreadyCheckedIn || checkInLoading}
+              onClick={() => void handleCheckIn()}
+              disabled={!canCheckInNow || isBusy || !isCorrectChain || !isConnected}
             >
-              {alreadyCheckedIn
-                ? "Чекин скоро будет доступен"
-                : checkInLoading
+              {isBusy
                 ? "Ожидание подтверждения..."
-                : "Сделать onchain чекин"}
+                : canCheckInNow
+                  ? "Сделать onchain чекин"
+                  : "Чекин скоро будет доступен"}
             </button>
             <small>
-              Контракт принимает чек-ин каждые 2 минуты. Каждый успешный чек-ин дает +10% к
-              каждому тапу, пропуск окна сбрасывает серию.
+              Контракт принимает чек-ин каждые 2 минуты. Каждый успешный чек-ин дает +10% к каждому тапу.
             </small>
           </div>
         ) : null}
