@@ -1,5 +1,5 @@
 # gamegruz1
-
+о
 Clean starter scaffold for a new Base mini app project.
 
 This repository keeps the same high-level structure as `basegame01`, but without
